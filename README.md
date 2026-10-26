@@ -1,57 +1,97 @@
-# stringspace — repository context from tokens, hops, strings and laws
+# codegraph — meaningful chunks + a self-updating association graph, served to the AI over MCP
 
-A request comes in. Its words are found as tokens in the repository, the
-system hops outward from them along associations, and the strings it forms
-decide which pieces of the repository are handed back as context.
+1. **Chunk** the repository into meaningful pieces: functions, methods,
+   classes, module code, Markdown sections, and paragraphs for everything
+   else.
+2. **Associate** every chunk with others. The kinds of association are:
+   - `calls`: uses a name another chunk defines
+   - `imports`
+   - `contains`
+   - `sequence`
+   - `similar`: shares rare words
+   - `cochange`: changed in the same git commits
+   - `note`: research linked to code
+   - `learned`: links the AI added itself
 
+   This makes a big `associations.jsonl`.
+3. **Serve** it over MCP. The AI searches it first, follows associations,
+   and gets the chunks as context.
+4. **Self-update.** Every web search, web page fetched and file edited is
+   written back into the graph by Claude Code hooks. Changed files are
+   re-chunked before each search. Anything the AI learns can be saved with
+   `remember` and `associate`.
+
+Pure Python 3, no dependencies.
+
+## Use it on a repository
+
+```bash
+git clone <this repo> ~/codegraph
+cd /path/to/your/repo
+PYTHONPATH=~/codegraph python3 -m codegraph build .     # chunks + associations -> .codegraph/
+PYTHONPATH=~/codegraph python3 -m codegraph install .   # writes .mcp.json and the hooks in .claude/settings.json
 ```
-python3 -m stringspace build [ROOT]               # place tokens, associate, seed strings, mine laws
-python3 -m stringspace ask "request" [ROOT] -k 6  # hop from the request, print context snippets
-python3 -m stringspace ask "request" --strings    # ...and show the strings that were used
-python3 -m stringspace stats [ROOT]               # densest black holes and strongest laws
-python3 -m stringspace.bench                      # measure it against plain keyword search
-```
 
-Pure Python 3, no dependencies. State lives in `ROOT/.stringspace/state.json`
-and grows with every request.
+Then paste the snippet `install` prints into the repo's `CLAUDE.md`, so
+Claude calls `search_code` before every task and saves what it learns.
+Start Claude Code in the repo and approve the `codegraph` MCP server.
 
-## The pieces
+Other commands: `search "question" [ROOT]`, `stats [ROOT]`, `serve [ROOT]`
+(the MCP server on stdio), and `hook` (the PostToolUse hook; it reads the
+event from stdin).
 
-| Idea | Code |
+## MCP tools
+
+| tool | what it does |
 |---|---|
-| **Tokens = black holes** | `blackholes.py`: every word in the repo, split on `snake_case` and `camelCase`, gets a random location that never moves (a unit vector seeded by the token) |
-| **Associations between pairs** | two tokens are associated when they sit on the same or adjacent lines; strength is normalised so that tokens appearing everywhere don't swallow everything |
-| **Hops** | `strings.hop`: a walk from a token along its associations, picking stronger ones more often |
-| **Bridges** | `strings.bridge`: every *pair* of request tokens is connected by the strongest chains of at most 3 hops |
-| **Strings** | each hop chain is a string. Its location is the sum of the locations it passes through, each bound to its position in the chain (the oscillation). A string formed again is reinforced, and strings sharing a black hole touch |
-| **Laws** | `laws.py`: a run of hops that turns up inside many different strings becomes a law. Laws act as shortcuts for later walks (a walk can take a whole law in one jump) and add weight to the strings that contain them |
-| **Context** | `context.py`: strings touching the request are scored by closeness to the request's location, how many request tokens they connect, reinforcement and laws. The top strings spread weight over the tokens they pass through, and the 10-line windows of the repo that carry the most weight come back as context |
+| `search_code` | BM25 over chunks, then scores flow 2 hops along associations; each hit says *why* it was associated |
+| `read_chunk` | full chunk text and its strongest associations |
+| `related` | a chunk's neighbours with association kinds |
+| `remember` | save research, findings or decisions as a note linked to code |
+| `associate` | add a link the graph missed; these weigh the most |
+| `graph_stats` | counts |
 
-## How well it works (honest numbers)
+## What lives in `.codegraph/`
 
-`python3 -m stringspace.bench` asks 12 questions about Python's `email`
-package and 12 about `asyncio`. `asyncio` was held out and never used for
-tuning. It counts how often the right file is in the top 3 snippets.
+| file | contents |
+|---|---|
+| `chunks.jsonl` | every chunk: id (`path::Qualified.name`), lines, text, names defined and used |
+| `associations.jsonl` | every association: both ends, weight, kinds and why |
+| `notes.jsonl` | research and memory: web pages, web searches, `remember` notes |
+| `learned.jsonl` | associations the AI added, including files edited together in one session |
+
+Notes and learned links survive rebuilds. Everything else is rebuilt from
+the code.
+
+## Measured
+
+`python3 -m codegraph.bench` asks 24 questions about Python's `email` and
+`asyncio` packages, each with a known answer file (`asyncio` was never used
+for tuning). It counts how often the right file is among the top results:
 
 ```
-                           email   asyncio
-keyword search (no hops)   10/12   10/12
-strings                    10/12   10/12   (same on every seed)
+                 email (12)          asyncio (12)
+                 k=1  k=3  k=5       k=1  k=3  k=5
+keywords          6   10   12        10   10   11
+chunks            8   11   11        10   12   12
+chunks+assoc      9   11   11        10   12   12
 ```
 
-So far, strings **match keyword search but do not beat it**. What the
-experiments showed:
+Meaningful chunks are most of the gain. Associations add little to a single
+search. Where they help is in what the AI does next: following
+`calls`/`imports`/`note` links with `related`, and finding past research
+again.
 
-- If the exact lines individual strings hopped through are used directly,
-  the context gets worse (down to 6–7 of 12). Random walks are noisy
-  evidence one at a time.
-- Hop tokens help only when they are weighted lightly next to the request's
-  own words (0.1×). At 0.2× and above, results drop.
-- Early on, letting strings and laws pile up across requests made results
-  *worse*: popular paths got reinforced and crowded out each request's own
-  strings. Reinforcement is now capped.
+End to end, Claude Code was run on the `email` package with only these
+tools and no file reads. It found `Generator._handle_multipart`,
+`_make_boundary` and `Message.get_boundary`/`set_boundary` in two searches,
+explained correctly how boundaries are picked and checked, and saved a note
+of what it found.
 
-The questions where hops should earn their place are the ones whose words
-never appear in the answer: asking about "generated" when the code says
-`_make_boundary`. This benchmark has few of those. A benchmark built from
-such questions is the next thing to try.
+`python3 -m unittest discover tests` runs the tests.
+
+## `stringspace/`
+
+An earlier experiment: word tokens at fixed random locations, random-walk
+"strings" and mined "laws". On the same benchmark it only matched keyword
+search, so codegraph replaces it.

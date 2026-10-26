@@ -22,7 +22,7 @@ OCCURRENCES = 16       # lines remembered per token per file
 TOKENS_PER_LINE = 40
 WINDOW = 10            # lines per window of text that can be handed out as context
 MAX_FILE_BYTES = 1_000_000
-SKIP_DIRS = {".git", "__pycache__", "node_modules", ".stringspace", "venv",
+SKIP_DIRS = {".git", "__pycache__", "node_modules", ".stringspace", ".codegraph", "venv",
              ".venv", "dist", "build", ".mypy_cache", ".pytest_cache"}
 BINARY_EXT = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".gz",
               ".tar", ".whl", ".so", ".dll", ".exe", ".pyc", ".woff", ".woff2",
