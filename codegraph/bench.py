@@ -45,35 +45,25 @@ def _files(g, query, k, hops):
     return [g.chunks[h["id"]]["path"] for h in g.search(query, k=k, hops=hops)]
 
 
-def main(ks=(1, 3, 5), embeddings=("lsa",)):
+def main(ks=(1, 3, 5)):
     for package, cases in SUITES.items():
         src = os.path.join(sysconfig.get_paths()["stdlib"], package)
         with tempfile.TemporaryDirectory() as tmp:
             root = os.path.join(tmp, package)
             shutil.copytree(src, root, ignore=shutil.ignore_patterns("__pycache__"))
             base = {q: keyword_baseline(root, q, max(ks)) for q, _ in cases + PARAPHRASED[package]}
-            graphs = {"none": Graph(root).build("")}
-            for spec in embeddings:
-                try:
-                    graphs[spec] = Graph(root).build(spec)
-                except Exception as e:  # backend not installed / no network
-                    print(f"  ({spec} unavailable: {type(e).__name__}: {e})")
-            g = graphs["none"]
+            g = Graph(root).build()
             print(f"\n{package}: {len(g.chunks)} chunks, "
                   f"{sum(len(v) for v in g.edges.values()) // 2} associations")
             for title, qs in (("questions", cases), ("paraphrased", PARAPHRASED[package])):
-                print(f"  {title} ({len(qs)})".ljust(34) + "  ".join(f"k={k}" for k in ks))
+                print(f"  {title} ({len(qs)})".ljust(30) + "  ".join(f"k={k}" for k in ks))
                 rows = {"keywords": lambda q, k: base[q][:k],
                         "chunks": lambda q, k: _files(g, q, k, 0),
                         "chunks+assoc": lambda q, k: _files(g, q, k, 2)}
-                for spec, gg in graphs.items():
-                    if spec != "none":
-                        rows[f"chunks+assoc+{spec}"] = lambda q, k, gg=gg: _files(gg, q, k, 2)
                 for label, fn in rows.items():
                     cells = [sum(bool(want & set(fn(q, k))) for q, want in qs) for k in ks]
-                    print(f"    {label:<28}" + "  ".join(f"{c:3d}" for c in cells))
+                    print(f"    {label:<24}" + "  ".join(f"{c:3d}" for c in cells))
 
 
 if __name__ == "__main__":
-    import sys
-    main(embeddings=tuple(sys.argv[1:]) or ("lsa",))
+    main()

@@ -6,6 +6,8 @@ Tools the AI gets:
   related       a chunk's strongest associations
   remember      save research, findings or decisions into the graph
   associate     add an association the AI discovered (counts the most)
+  pending_annotations  files/chunks the AI has not described yet
+  annotate      the AI writes what a file/chunk means: summary + concepts
   graph_stats   size of the graph
 
 Before every search the server re-chunks files that changed on disk, so the
@@ -51,6 +53,26 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "a": {"type": "string"}, "b": {"type": "string"}, "why": {"type": "string"}},
          "required": ["a", "b", "why"]}},
+    {"name": "pending_annotations",
+     "description": "Files (level='file', default) or chunks (level='chunk') that have no annotation yet, "
+                    "or whose code changed since. Read the overviews, then call annotate for each.",
+     "inputSchema": {"type": "object", "properties": {
+         "k": {"type": "integer", "description": "how many (default 5)"},
+         "level": {"type": "string", "enum": ["file", "chunk"]}}}},
+    {"name": "annotate",
+     "description": "Give files or chunks their meaning: a one or two sentence plain-language summary of "
+                    "what it does and why, plus concept words a person might use when asking about it "
+                    "(synonyms, everyday words, the problem it solves, related standards). Optional links "
+                    "to other chunk ids, paths or symbols it works with. Search uses all of this.",
+     "inputSchema": {"type": "object", "properties": {"items": {"type": "array", "items": {
+         "type": "object", "properties": {
+             "target": {"type": "string", "description": "file path or chunk id"},
+             "summary": {"type": "string"},
+             "concepts": {"type": "array", "items": {"type": "string"}},
+             "links": {"type": "array", "items": {"type": "object", "properties": {
+                 "to": {"type": "string"}, "why": {"type": "string"}}}}},
+         "required": ["target", "summary", "concepts"]}}},
+         "required": ["items"]}},
     {"name": "graph_stats", "description": "Counts of chunks, associations, notes and learned links.",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
@@ -90,8 +112,10 @@ class Server:
                 why = "matched the query" if h["matched"] else "; ".join(h["why"])
                 if h["matched"] and h["why"]:
                     why += "; also " + "; ".join(h["why"][:2])
+                meaning = g.meaning(h["id"])
+                meaning = f"meaning: {meaning}\n" if meaning else ""
                 out.append(f"## {h['id']}  [{c['kind']}, {_where(c)}, score {h['score']}]\n"
-                           f"why: {why}\n```\n{_snippet(c)}\n```")
+                           f"{meaning}why: {why}\n```\n{_snippet(c)}\n```")
             return "\n\n".join(out)
         if name == "read_chunk":
             c = g.chunks.get(args["id"])
@@ -110,10 +134,27 @@ class Server:
         if name == "associate":
             ok = g.associate(args["a"], args["b"], args["why"])
             return "Associated." if ok else "Could not find one of those chunks, paths or symbols."
+        if name == "pending_annotations":
+            g.refresh()
+            level = args.get("level", "file")
+            items, remaining = g.pending(int(args.get("k", 5)), level)
+            if not items:
+                return f"Every {level} is annotated and up to date."
+            body = "\n\n".join(f"### {it['target']}\n```\n{it['overview']}\n```" for it in items)
+            return f"{remaining} {level}s still need annotations. Next {len(items)}:\n\n{body}"
+        if name == "annotate":
+            done, missing = g.annotate(args.get("items", []))
+            msg = f"Annotated {len(done)}."
+            if missing:
+                msg += f" Not found: {', '.join(map(str, missing))}."
+            left = sum(1 for p in g.files if g.stale(p))
+            return msg + f" {left} files still unannotated."
         if name == "graph_stats":
             n_edges = sum(len(v) for v in g.edges.values()) // 2
+            annotated = sum(1 for p in g.files if not g.stale(p))
             return (f"{len(g.files)} files, {len(g.chunks)} chunks, {n_edges} associations, "
-                    f"{len(g.notes)} notes, {len(g.learned)} learned associations")
+                    f"{len(g.notes)} notes, {len(g.learned)} learned associations, "
+                    f"{annotated}/{len(g.files)} files annotated")
         raise KeyError(name)
 
     def handle(self, msg):

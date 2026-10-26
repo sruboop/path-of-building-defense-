@@ -16,12 +16,16 @@
    This makes a big `associations.jsonl`.
 3. **Serve** it over MCP. The AI searches it first, follows associations,
    and gets the chunks as context.
-4. **Self-update.** Every web search, web page fetched and file edited is
+4. **Meaning from the AI.** Claude reads the chunks and writes what each file
+   means in plain words (`annotate`), so questions in everyday words find
+   code named in programmer's words.
+5. **Self-update.** Every web search, web page fetched and file edited is
    written back into the graph by Claude Code hooks. Changed files are
    re-chunked before each search. Anything the AI learns can be saved with
    `remember` and `associate`.
 
-Pure Python 3.11+, no dependencies. Embeddings are optional (see below).
+Pure Python 3.11+, no dependencies, no outside models: the meaning comes
+from the AI you are already talking to.
 
 ## Use it on a repository
 
@@ -36,25 +40,19 @@ Then paste the snippet `install` prints into the repo's `CLAUDE.md`, so
 Claude calls `search_code` before every task and saves what it learns.
 Start Claude Code in the repo and approve the `codegraph` MCP server.
 
-### Embeddings (matching by meaning)
+### Meaning comes from the AI in the chat, not from an outside model
 
-```bash
-pip install fastembed                     # local model, runs offline after one download
-python3 -m codegraph build . --embeddings fastembed                                    # BAAI/bge-small-en-v1.5
-python3 -m codegraph build . --embeddings fastembed:jinaai/jina-embeddings-v2-base-code  # tuned for code
-python3 -m codegraph build . --embeddings ollama:nomic-embed-text    # local Ollama server
-python3 -m codegraph build . --embeddings voyage:voyage-code-3       # VOYAGE_API_KEY
-python3 -m codegraph build . --embeddings openai                     # OPENAI_API_KEY
-```
+After `build`, ask Claude in the repo to "annotate the codegraph". It calls
+`pending_annotations`, reads the overview of each file, and `annotate`s
+every file with:
+- a plain-language summary;
+- the everyday words a person would use when asking about that file
+  ("placeholder for a later value" → `futures.py`);
+- any links it notices.
 
-With embeddings on:
-- every chunk and note gets a vector;
-- each chunk gets `semantic` associations to its 6 closest chunks in meaning;
-- `search_code` mixes keyword matches 50/50 with closeness in meaning.
-
-Vectors are cached by content hash in `.codegraph/vectors.npy`, so edits only
-re-embed what changed. The choice is remembered in `.codegraph/config.json`;
-`--embeddings none` turns it off.
+Those words are searched along with the code. When code changes, its
+annotation is marked stale and comes back in `pending_annotations`. On
+`asyncio` (34 files) this took Claude 13 turns and cost about $0.30.
 
 Other commands: `search "question" [ROOT]`, `stats [ROOT]`, `serve [ROOT]`
 (the MCP server on stdio), and `hook` (the PostToolUse hook; it reads the
@@ -69,7 +67,9 @@ event from stdin).
 | `related` | a chunk's neighbours with association kinds |
 | `remember` | save research, findings or decisions as a note linked to code |
 | `associate` | add a link the graph missed; these weigh the most |
-| `graph_stats` | counts |
+| `pending_annotations` | files/chunks not yet described by the AI, or changed since |
+| `annotate` | the AI writes a summary + concept words (+ links) for files or chunks |
+| `graph_stats` | counts, including how many files are annotated |
 
 ## What lives in `.codegraph/`
 
@@ -79,8 +79,9 @@ event from stdin).
 | `associations.jsonl` | every association: both ends, weight, kinds and why |
 | `notes.jsonl` | research and memory: web pages, web searches, `remember` notes |
 | `learned.jsonl` | associations the AI added, including files edited together in one session |
+| `annotations.jsonl` | the AI's summary and concept words per file/chunk, with the code hash they describe |
 
-Notes and learned links survive rebuilds. Everything else is rebuilt from
+Notes, learned links and annotations survive rebuilds. Everything else is rebuilt from
 the code.
 
 ## Measured
@@ -102,19 +103,23 @@ search. Where they help is in what the AI does next: following
 `calls`/`imports`/`note` links with `related`, and finding past research
 again.
 
-**Questions worded unlike the code** (16 more, e.g. "placeholder for a value
-that will be available later" for `Future`). Here a single search finds the
-right file in the top 3 for only 6/8 (`email`) and 4/8 (`asyncio`). The
-built-in `lsa` embedding, learned from the repo alone, made this worse, so
-it is not a substitute for a pretrained model. A pretrained model could not
-be measured here: the test environment could not reach Hugging Face.
+**Questions worded unlike the code** (8 per package, e.g. "placeholder for a
+value that will be available later" for `Future`). Plain search does badly on
+these. After Claude annotated `asyncio` once, with a generic instruction and
+without seeing the questions, the same single search did much better:
 
-But the AI closes most of this gap by itself. The 4 `asyncio` questions the
-search missed were given to Claude Code with only these tools. It got all 4
-right in one search each, because it rewrote the request into the code's
-words ("SSL TLS handshake", "Future", "TaskGroup", "timeout"). It landed on
-`SSLProtocol._start_handshake`, `futures.py::Future`, `TaskGroup._abort` and
-`timeouts.py::timeout`, for about $0.06 per question.
+```
+asyncio, single search, right file in top k     k=1   k=3   k=5
+questions (12)    before annotation              10    12    12
+                  after Claude annotated         12    12    12
+paraphrased (8)   before annotation               2     4     5
+                  after Claude annotated          6     7     8
+```
+
+During a task Claude also rewords its own searches. The 4 paraphrased
+questions plain search missed were given to Claude Code with only these
+tools: it got all 4 right in one search each ("SSL TLS handshake",
+"Future", "TaskGroup", "timeout"), for about $0.06 per question.
 
 End to end, Claude Code was also run on the `email` package with only these
 tools and no file reads. It found `Generator._handle_multipart`,

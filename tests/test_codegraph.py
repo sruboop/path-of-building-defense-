@@ -80,16 +80,23 @@ class CodegraphTest(unittest.TestCase):
             sys.stdin = old
         g2 = Graph.load(self.root)
         self.assertTrue(any(n["name"] == "Web search: vat rates" for n in g2.notes))
-
-    def test_embeddings_add_semantic_links_and_survive_reload(self):
-        try:
-            import numpy  # noqa: F401
-        except ImportError:
-            self.skipTest("numpy not installed")
-        g = Graph(self.root).build("lsa:4")
-        self.assertIsNotNone(g.vectors)
-        self.assertTrue(g.search("checkout", k=3))
-        self.assertEqual(Graph.load(self.root).embeddings, "lsa:4")
+    def test_ai_annotations_make_everyday_words_findable(self):
+        query = "how much does the customer pay with vat"
+        self.assertNotIn("shop/pricing.py::total_price", [h["id"] for h in self.g.search(query, k=1)])
+        items, _ = self.g.pending(k=10)
+        self.assertIn("shop/pricing.py", [i["target"] for i in items])
+        done, missing = self.g.annotate([{"target": "shop/pricing.py::total_price",
+                                          "summary": "Works out what the customer pays, VAT included.",
+                                          "concepts": ["customer pay", "vat", "bill amount"],
+                                          "links": [{"to": "Cart.checkout", "why": "checkout bills with it"}]}])
+        self.assertEqual((done, missing), (["shop/pricing.py::total_price"], []))
+        g2 = Graph.load(self.root)
+        self.assertEqual(g2.search(query, k=1)[0]["id"], "shop/pricing.py::total_price")
+        self.assertFalse(g2.stale("shop/pricing.py::total_price"))
+        with open(os.path.join(self.root, "shop/pricing.py"), "a") as f:
+            f.write("# changed\n")
+        g2.refresh()
+        self.assertTrue(g2.stale("shop/pricing.py"))  # code changed: annotation is due again
 
 
 if __name__ == "__main__":

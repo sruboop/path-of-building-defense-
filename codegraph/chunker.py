@@ -16,6 +16,7 @@ MAX_CHUNK_LINES = 120
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".codegraph", ".stringspace",
              "venv", ".venv", "dist", "build", ".mypy_cache", ".pytest_cache",
              ".tox", ".next", "target", "vendor"}
+SKIP_FILES = {".mcp.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
 BINARY_EXT = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".gz", ".tar",
               ".whl", ".so", ".dll", ".exe", ".pyc", ".woff", ".woff2", ".ttf", ".mp4",
               ".mp3", ".lock", ".bin", ".db", ".sqlite", ".svg", ".min.js", ".map"}
@@ -31,8 +32,11 @@ DEF_LINE = re.compile(
 
 def repository_files(root):
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".") or d == ".github")
+        dirnames[:] = sorted(d for d in dirnames
+                             if d == ".github" or (d not in SKIP_DIRS and not d.startswith(".")))
         for name in sorted(filenames):
+            if name in SKIP_FILES:
+                continue
             path = os.path.join(dirpath, name)
             if any(name.lower().endswith(e) for e in BINARY_EXT):
                 continue

@@ -1,9 +1,6 @@
 """codegraph command line.
 
-  python3 -m codegraph build   [ROOT] [--embeddings SPEC]
-                                              chunk + associate the repository
-                                              (SPEC: fastembed, ollama, voyage, openai, lsa,
-                                               optionally :MODEL; "none" turns them off)
+  python3 -m codegraph build   [ROOT]          chunk + associate the repository
   python3 -m codegraph search  "question" [ROOT]
   python3 -m codegraph stats   [ROOT]
   python3 -m codegraph serve   [ROOT]          MCP server on stdio
@@ -44,6 +41,11 @@ def install(root):
 
 
 CLAUDE_MD = """## Code context
+Once per repository (and again when `graph_stats` shows unannotated files):
+call `pending_annotations`, read the overviews and `annotate` each file with
+a plain-language summary and the everyday words someone would use to ask
+about it; repeat until none are pending.
+
 Before answering a question or changing code, call the `codegraph` MCP tool
 `search_code` with the task in plain words, then `read_chunk` / `related` on
 the most relevant ids to follow associations. Search again with different
@@ -78,15 +80,9 @@ def main(argv=None):
         from .server import Server
         print(Server(root).call("search_code", {"query": query}))
         return
-    embeddings = None
-    if "--embeddings" in rest:
-        i = rest.index("--embeddings")
-        embeddings = rest[i + 1]
-        rest = rest[:i] + rest[i + 2:]
-        embeddings = "" if embeddings == "none" else embeddings
     root = rest[0] if rest else "."
     if cmd == "build":
-        g = Graph(root).build(embeddings)
+        g = Graph(root).build()
         print(f"{len(g.files)} files, {len(g.chunks)} chunks, "
               f"{sum(len(v) for v in g.edges.values()) // 2} associations -> {g.dir}")
     elif cmd == "stats":
