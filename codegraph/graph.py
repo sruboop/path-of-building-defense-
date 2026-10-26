@@ -452,16 +452,23 @@ class Graph:
     def associate(self, a, b, why):
         """Link two things. Code, files, notes and symbols are found by id, path,
         title or name; anything else becomes a concept node."""
-        a, b = (a or "").strip(), (b or "").strip()
-        if not a or not b or a == b:
-            return False
+        return self.associate_many([{"a": a, "b": b, "why": why}]) == 1
+
+    def associate_many(self, links):
         self.sync()
-        self.learned.append({"a": a, "b": b, "why": why, "time": time.strftime("%Y-%m-%d %H:%M")})
-        _write_jsonl(os.path.join(self.dir, "learned.jsonl"), self.learned)
-        self._load_memory()
-        self._associate()
-        self.save()
-        return True
+        made = 0
+        for l in links:
+            a, b = (l.get("a") or "").strip(), (l.get("b") or "").strip()
+            if a and b and a != b:
+                self.learned.append({"a": a, "b": b, "why": l.get("why", ""),
+                                     "time": time.strftime("%Y-%m-%d %H:%M")})
+                made += 1
+        if made:
+            _write_jsonl(os.path.join(self.dir, "learned.jsonl"), self.learned)
+            self._load_memory()
+            self._associate()
+            self.save()
+        return made
 
     # -- searching -----------------------------------------------------------
     def bm25(self, query, k1=1.2, b=0.75):

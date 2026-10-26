@@ -117,6 +117,14 @@ class CodegraphTest(unittest.TestCase):
         titles = [n["name"] for n in Graph.load(self.root).notes]
         self.assertEqual(titles, ["Hook note", "Server note"])   # nothing overwritten
 
+    def test_associate_in_batches(self):
+        out = Server(self.root).call("associate", {"links": [
+            {"a": "oobleck", "b": "deflect", "why": "hard impacts go solid"},
+            {"a": "deflect", "b": "Cart.checkout", "why": "silly"},
+            {"a": "same", "b": "same", "why": "rejected"}]})
+        self.assertIn("Recorded 2 of 3", out)
+        self.assertIn("concept:deflect", Graph.load(self.root).edges["concept:oobleck"])
+
 
 if __name__ == "__main__":
     unittest.main()

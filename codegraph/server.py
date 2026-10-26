@@ -50,10 +50,13 @@ TOOLS = [
     {"name": "associate",
      "description": "Record that two things are connected: chunk ids, file paths, note titles, symbol "
                     "names, or plain ideas ('bunt', 'short-range knockback'), which become concept nodes. "
-                    "Learned associations weigh the most and are searchable.",
+                    "Learned associations weigh the most and are searchable. Send many at once in `links`.",
      "inputSchema": {"type": "object", "properties": {
-         "a": {"type": "string"}, "b": {"type": "string"}, "why": {"type": "string"}},
-         "required": ["a", "b", "why"]}},
+         "a": {"type": "string"}, "b": {"type": "string"}, "why": {"type": "string"},
+         "links": {"type": "array", "description": "many associations in one call",
+                   "items": {"type": "object", "properties": {
+                       "a": {"type": "string"}, "b": {"type": "string"}, "why": {"type": "string"}},
+                       "required": ["a", "b", "why"]}}}}},
     {"name": "pending_annotations",
      "description": "Files (level='file', default) or chunks (level='chunk') that have no annotation yet, "
                     "or whose code changed since. Read the overviews, then call annotate for each.",
@@ -134,9 +137,12 @@ class Server:
             nid = g.remember(args["title"], args["content"], args.get("source"), args.get("links", []))
             return f"Saved as {nid} with {len(g.edges.get(nid, {}))} associations."
         if name == "associate":
-            ok = g.associate(args["a"], args["b"], args["why"])
-            return ("Associated: " + " <-> ".join(", ".join(g._resolve(x)) for x in (args["a"], args["b"]))
-                    if ok else "Both ends are needed, and they must differ.")
+            links = list(args.get("links") or [])
+            if args.get("a") or args.get("b"):
+                links.append({"a": args.get("a"), "b": args.get("b"), "why": args.get("why", "")})
+            made = g.associate_many(links)
+            return f"Recorded {made} of {len(links)} associations." + \
+                ("" if made == len(links) else " Each needs two different, non-empty ends.")
         if name == "pending_annotations":
             g.refresh()
             level = args.get("level", "file")
