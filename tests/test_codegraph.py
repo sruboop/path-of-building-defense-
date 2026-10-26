@@ -81,6 +81,16 @@ class CodegraphTest(unittest.TestCase):
         g2 = Graph.load(self.root)
         self.assertTrue(any(n["name"] == "Web search: vat rates" for n in g2.notes))
 
+    def test_embeddings_add_semantic_links_and_survive_reload(self):
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            self.skipTest("numpy not installed")
+        g = Graph(self.root).build("lsa:4")
+        self.assertIsNotNone(g.vectors)
+        self.assertTrue(g.search("checkout", k=3))
+        self.assertEqual(Graph.load(self.root).embeddings, "lsa:4")
+
 
 if __name__ == "__main__":
     unittest.main()

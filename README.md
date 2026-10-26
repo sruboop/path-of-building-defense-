@@ -21,7 +21,7 @@
    re-chunked before each search. Anything the AI learns can be saved with
    `remember` and `associate`.
 
-Pure Python 3, no dependencies.
+Pure Python 3.11+, no dependencies. Embeddings are optional (see below).
 
 ## Use it on a repository
 
@@ -35,6 +35,26 @@ PYTHONPATH=~/codegraph python3 -m codegraph install .   # writes .mcp.json and t
 Then paste the snippet `install` prints into the repo's `CLAUDE.md`, so
 Claude calls `search_code` before every task and saves what it learns.
 Start Claude Code in the repo and approve the `codegraph` MCP server.
+
+### Embeddings (matching by meaning)
+
+```bash
+pip install fastembed                     # local model, runs offline after one download
+python3 -m codegraph build . --embeddings fastembed                                    # BAAI/bge-small-en-v1.5
+python3 -m codegraph build . --embeddings fastembed:jinaai/jina-embeddings-v2-base-code  # tuned for code
+python3 -m codegraph build . --embeddings ollama:nomic-embed-text    # local Ollama server
+python3 -m codegraph build . --embeddings voyage:voyage-code-3       # VOYAGE_API_KEY
+python3 -m codegraph build . --embeddings openai                     # OPENAI_API_KEY
+```
+
+With embeddings on:
+- every chunk and note gets a vector;
+- each chunk gets `semantic` associations to its 6 closest chunks in meaning;
+- `search_code` mixes keyword matches 50/50 with closeness in meaning.
+
+Vectors are cached by content hash in `.codegraph/vectors.npy`, so edits only
+re-embed what changed. The choice is remembered in `.codegraph/config.json`;
+`--embeddings none` turns it off.
 
 Other commands: `search "question" [ROOT]`, `stats [ROOT]`, `serve [ROOT]`
 (the MCP server on stdio), and `hook` (the PostToolUse hook; it reads the
@@ -82,7 +102,21 @@ search. Where they help is in what the AI does next: following
 `calls`/`imports`/`note` links with `related`, and finding past research
 again.
 
-End to end, Claude Code was run on the `email` package with only these
+**Questions worded unlike the code** (16 more, e.g. "placeholder for a value
+that will be available later" for `Future`). Here a single search finds the
+right file in the top 3 for only 6/8 (`email`) and 4/8 (`asyncio`). The
+built-in `lsa` embedding, learned from the repo alone, made this worse, so
+it is not a substitute for a pretrained model. A pretrained model could not
+be measured here: the test environment could not reach Hugging Face.
+
+But the AI closes most of this gap by itself. The 4 `asyncio` questions the
+search missed were given to Claude Code with only these tools. It got all 4
+right in one search each, because it rewrote the request into the code's
+words ("SSL TLS handshake", "Future", "TaskGroup", "timeout"). It landed on
+`SSLProtocol._start_handshake`, `futures.py::Future`, `TaskGroup._abort` and
+`timeouts.py::timeout`, for about $0.06 per question.
+
+End to end, Claude Code was also run on the `email` package with only these
 tools and no file reads. It found `Generator._handle_multipart`,
 `_make_boundary` and `Message.get_boundary`/`set_boundary` in two searches,
 explained correctly how boundaries are picked and checked, and saved a note

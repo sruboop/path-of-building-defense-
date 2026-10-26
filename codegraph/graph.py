@@ -6,6 +6,8 @@ Kinds of association between chunks:
   calls      a chunk uses a name another chunk defines
   imports    a module imports another module
   similar    the two chunks use the same rare words (TF-IDF cosine)
+  semantic   the two chunks mean similar things (embedding cosine; optional,
+             see embed.py)
   cochange   git history: the files keep changing in the same commits
   note       research notes linked to the code they talk about
   learned    associations the AI added itself, which count the most
@@ -25,8 +27,11 @@ from .chunker import chunk_file, read, repository_files
 
 DIR = ".codegraph"
 WEIGHTS = {"contains": 0.3, "sequence": 0.25, "calls": 1.0, "imports": 0.6,
-           "similar": 0.8, "cochange": 0.5, "note": 0.9, "learned": 1.5}
+           "similar": 0.8, "semantic": 0.8, "cochange": 0.5, "note": 0.9, "learned": 1.5}
 SIMILAR_K = 6
+SEMANTIC_K = 6
+SEMANTIC_MIN = 0.3
+EMBED_WEIGHT = 0.5           # share of the first-hop score that comes from meaning
 COMMON_NAME_LIMIT = 6        # a name defined in more places than this links nothing
 STOP = set("""self cls the and for not none true false return if else elif in is of to a an
 def class import from as with try except finally raise pass while break continue lambda yield
@@ -71,9 +76,20 @@ class Graph:
         self.notes = []
         self.learned = []
         self.edges = defaultdict(dict)   # id -> {id: [weight, {kind: why}]}
+        self.vectors = None
+        self.config = _read_json(os.path.join(self.dir, "config.json"))
+
+    @property
+    def embeddings(self):
+        return os.environ.get("CODEGRAPH_EMBEDDINGS", self.config.get("embeddings", ""))
 
     # -- building ----------------------------------------------------------
-    def build(self):
+    def build(self, embeddings=None):
+        if embeddings is not None:
+            self.config["embeddings"] = embeddings
+            os.makedirs(self.dir, exist_ok=True)
+            with open(os.path.join(self.dir, "config.json"), "w") as f:
+                json.dump(self.config, f, indent=2)
         for rel in repository_files(self.root):
             self._chunk_path(rel)
         self._load_memory()
@@ -181,6 +197,7 @@ class Graph:
 
         self._imports(by_file)
         self._similar()
+        self._semantic()
         self._cochange(by_file)
         for n in self.notes:
             for target in n.get("links", []):
@@ -261,6 +278,33 @@ class Graph:
                 kind = "note" if cid.startswith("note:") or o.startswith("note:") else "similar"
                 self._link(cid, o, kind, f"share rare words (cos {s:.2f})", WEIGHTS[kind] * s)
 
+    def _semantic(self):
+        if not self.embeddings:
+            self.vectors = None
+            return
+        from .embed import VectorStore, make
+        if self.vectors is None or self.vectors.embedder.spec != make(self.embeddings).spec:
+            self.vectors = VectorStore(self.dir, make(self.embeddings))
+        self.vectors.update(self.chunks, self.bags)
+        ids = self.vectors.ids
+        for r, c, cos in self.vectors.neighbours(SEMANTIC_K):
+            if cos >= SEMANTIC_MIN:
+                kind = "note" if ids[r].startswith("note:") or ids[c].startswith("note:") else "semantic"
+                self._link(ids[r], ids[c], kind, f"similar meaning (cos {cos:.2f})", WEIGHTS[kind] * cos)
+
+    def _meaning(self, query, pool=50):
+        """Chunks closest in meaning to the query, scaled to 0..1."""
+        if self.vectors is None or self.vectors.matrix is None:
+            return {}
+        import numpy as np
+        q = self.vectors.query(query, Counter(_stem(t) for t in terms(query)))
+        sims = self.vectors.matrix @ q
+        order = np.argsort(-sims)[:pool]
+        hi, lo = float(sims[order[0]]), float(sims[order[-1]])
+        if hi <= lo:
+            return {}
+        return {self.vectors.ids[i]: (float(sims[i]) - lo) / (hi - lo) for i in order}
+
     def _cochange(self, by_file, commits=500):
         try:
             log = subprocess.run(["git", "-C", self.root, "log", f"-{commits}", "--name-only",
@@ -330,14 +374,23 @@ class Graph:
 
     def search(self, query, k=8, hops=2, spread=0.5):
         """Keyword match first, then let the score flow along associations."""
-        direct = self.bm25(query)
-        if not direct:
+        words = self.bm25(query)
+        meaning = self._meaning(query)
+        if not words and not meaning:
             return []
-        top = max(direct.values())
-        seeds = dict(sorted(direct.items(), key=lambda kv: -kv[1])[:30])
-        score = {cid: s / top for cid, s in direct.items()}
+        top = max(words.values(), default=1.0)
+        share = EMBED_WEIGHT if meaning else 0.0
+        direct = defaultdict(float)
+        for cid, s in words.items():
+            direct[cid] += (1 - share) * s / top
+        for cid, s in meaning.items():
+            direct[cid] += share * s
+        score = dict(direct)
         why = defaultdict(list)
-        frontier = {cid: s / top for cid, s in seeds.items()}
+        for cid in meaning:
+            if cid not in words:
+                why[cid].append("close in meaning to the query")
+        frontier = dict(sorted(direct.items(), key=lambda kv: -kv[1])[:30])
         for h in range(hops):
             nxt = defaultdict(float)
             for cid, s in frontier.items():
@@ -353,7 +406,7 @@ class Graph:
                 score[cid] = score.get(cid, 0.0) + g
             frontier = nxt
         ranked = sorted(score.items(), key=lambda kv: -kv[1])[:k]
-        return [{"id": cid, "score": round(s, 3), "matched": cid in direct,
+        return [{"id": cid, "score": round(s, 3), "matched": cid in words,
                  "why": why.get(cid, [])} for cid, s in ranked]
 
     def related(self, cid, k=12):
@@ -385,6 +438,14 @@ class Graph:
         g._load_memory()
         g._associate()
         return g
+
+
+def _read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def _read_jsonl(path):

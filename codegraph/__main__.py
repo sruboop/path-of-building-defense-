@@ -1,6 +1,9 @@
 """codegraph command line.
 
-  python3 -m codegraph build   [ROOT]          chunk + associate the repository
+  python3 -m codegraph build   [ROOT] [--embeddings SPEC]
+                                              chunk + associate the repository
+                                              (SPEC: fastembed, ollama, voyage, openai, lsa,
+                                               optionally :MODEL; "none" turns them off)
   python3 -m codegraph search  "question" [ROOT]
   python3 -m codegraph stats   [ROOT]
   python3 -m codegraph serve   [ROOT]          MCP server on stdio
@@ -18,7 +21,9 @@ def install(root):
     """Writes ROOT/.mcp.json and ROOT/.claude/settings.json so Claude Code uses codegraph."""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     root = os.path.abspath(root)
-    env = {"PYTHONPATH": here}
+    # PYTHONSAFEPATH: never import from the repo itself (a repo with its own
+    # subprocess.py or json.py would otherwise shadow the standard library)
+    env = {"PYTHONPATH": here, "PYTHONSAFEPATH": "1"}
     mcp_path = os.path.join(root, ".mcp.json")
     mcp = _load(mcp_path)
     mcp.setdefault("mcpServers", {})["codegraph"] = {
@@ -27,7 +32,7 @@ def install(root):
 
     settings_path = os.path.join(root, ".claude", "settings.json")
     settings = _load(settings_path)
-    command = f"PYTHONPATH={json.dumps(here)} python3 -m codegraph hook {json.dumps(root)}"
+    command = f"PYTHONSAFEPATH=1 PYTHONPATH={json.dumps(here)} python3 -m codegraph hook {json.dumps(root)}"
     hooks = settings.setdefault("hooks", {}).setdefault("PostToolUse", [])
     hooks[:] = [h for h in hooks if "codegraph hook" not in json.dumps(h)]
     hooks.append({"matcher": "WebSearch|WebFetch|Edit|Write|MultiEdit|NotebookEdit",
@@ -73,9 +78,15 @@ def main(argv=None):
         from .server import Server
         print(Server(root).call("search_code", {"query": query}))
         return
+    embeddings = None
+    if "--embeddings" in rest:
+        i = rest.index("--embeddings")
+        embeddings = rest[i + 1]
+        rest = rest[:i] + rest[i + 2:]
+        embeddings = "" if embeddings == "none" else embeddings
     root = rest[0] if rest else "."
     if cmd == "build":
-        g = Graph(root).build()
+        g = Graph(root).build(embeddings)
         print(f"{len(g.files)} files, {len(g.chunks)} chunks, "
               f"{sum(len(v) for v in g.edges.values()) // 2} associations -> {g.dir}")
     elif cmd == "stats":
