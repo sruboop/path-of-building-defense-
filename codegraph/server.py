@@ -48,8 +48,9 @@ TOOLS = [
          "links": {"type": "array", "items": {"type": "string"}}},
          "required": ["title", "content"]}},
     {"name": "associate",
-     "description": "Record that two chunks/files/symbols are connected in a way the graph missed "
-                    "(e.g. 'config is read here, used there'). Learned associations weigh the most.",
+     "description": "Record that two things are connected: chunk ids, file paths, note titles, symbol "
+                    "names, or plain ideas ('bunt', 'short-range knockback'), which become concept nodes. "
+                    "Learned associations weigh the most and are searchable.",
      "inputSchema": {"type": "object", "properties": {
          "a": {"type": "string"}, "b": {"type": "string"}, "why": {"type": "string"}},
          "required": ["a", "b", "why"]}},
@@ -85,7 +86,7 @@ def _snippet(chunk, limit=SNIPPET_LINES):
 
 
 def _where(c):
-    return c["path"] if c["kind"] == "note" else f"{c['path']}:{c['start']}-{c['end']}"
+    return c["path"] if c["kind"] in ("note", "concept") else f"{c['path']}:{c['start']}-{c['end']}"
 
 
 class Server:
@@ -101,6 +102,7 @@ class Server:
 
     def call(self, name, args):
         g = self.graph
+        g.sync()  # the hooks write from another process
         if name == "search_code":
             changed = g.refresh()
             hits = g.search(args["query"], k=int(args.get("k", 8)))
@@ -133,7 +135,8 @@ class Server:
             return f"Saved as {nid} with {len(g.edges.get(nid, {}))} associations."
         if name == "associate":
             ok = g.associate(args["a"], args["b"], args["why"])
-            return "Associated." if ok else "Could not find one of those chunks, paths or symbols."
+            return ("Associated: " + " <-> ".join(", ".join(g._resolve(x)) for x in (args["a"], args["b"]))
+                    if ok else "Both ends are needed, and they must differ.")
         if name == "pending_annotations":
             g.refresh()
             level = args.get("level", "file")

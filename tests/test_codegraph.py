@@ -98,6 +98,25 @@ class CodegraphTest(unittest.TestCase):
         g2.refresh()
         self.assertTrue(g2.stale("shop/pricing.py"))  # code changed: annotation is due again
 
+    def test_associate_ideas_creates_concepts(self):
+        self.assertTrue(self.g.associate("bunt", "short-range knockback", "a bunt barely moves the ball"))
+        self.assertTrue(self.g.associate("bunt", "total_price", "silly example link to code"))
+        g2 = Graph.load(self.root)
+        self.assertIn("concept:bunt", g2.chunks)
+        self.assertIn("concept:short-range knockback", g2.edges["concept:bunt"])
+        self.assertIn("shop/pricing.py::total_price", g2.edges["concept:bunt"])
+        self.assertEqual(g2.search("knockback", k=1)[0]["id"], "concept:short-range knockback")
+
+    def test_server_sees_what_the_hooks_wrote(self):
+        s = Server(self.root)
+        s.call("graph_stats", {})                     # server has loaded the graph
+        Graph.load(self.root).remember("Hook note", "zebra crossings")   # another process
+        out = s.call("search_code", {"query": "zebra"})
+        self.assertIn("Hook note", out)
+        s.call("remember", {"title": "Server note", "content": "giraffe"})
+        titles = [n["name"] for n in Graph.load(self.root).notes]
+        self.assertEqual(titles, ["Hook note", "Server note"])   # nothing overwritten
+
 
 if __name__ == "__main__":
     unittest.main()

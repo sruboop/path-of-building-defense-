@@ -113,12 +113,51 @@ class Graph:
             self.chunks[c["id"]] = c
         self.files[rel] = [st.st_mtime, st.st_size, [c["id"] for c in made]]
 
+    MEMORY = ("notes.jsonl", "learned.jsonl", "annotations.jsonl")
+
+    def _memory_stamp(self):
+        stamp = []
+        for name in self.MEMORY:
+            try:
+                st = os.stat(os.path.join(self.dir, name))
+                stamp.append((st.st_mtime_ns, st.st_size))
+            except FileNotFoundError:
+                stamp.append(None)
+        return stamp
+
     def _load_memory(self):
+        for cid in [cid for cid, c in self.chunks.items() if c["kind"] in ("note", "concept")]:
+            del self.chunks[cid]
         self.notes = _read_jsonl(os.path.join(self.dir, "notes.jsonl"))
         self.learned = _read_jsonl(os.path.join(self.dir, "learned.jsonl"))
         self.annotations = {a["target"]: a for a in _read_jsonl(os.path.join(self.dir, "annotations.jsonl"))}
         for n in self.notes:
             self.chunks[n["id"]] = n
+        self._concepts()
+        self._stamp = self._memory_stamp()
+
+    def _concepts(self):
+        """Ends of learned associations that are not code or notes become concept
+        nodes, so the AI can associate ideas ("bunt", "knockback") freely."""
+        whys = defaultdict(list)
+        for l in self.learned:
+            for end, other in ((l["a"], l["b"]), (l["b"], l["a"])):
+                if not self._resolve(end, concepts=False):
+                    whys[end.strip()].append(f"{other}: {l.get('why', '')}")
+        for name, lines in whys.items():
+            cid = f"concept:{name.lower()}"
+            text = f"{name}\n" + "\n".join(lines)
+            self.chunks[cid] = {"id": cid, "path": "concept", "kind": "concept", "name": name,
+                                "start": 1, "end": 1, "text": text, "defines": [],
+                                "uses": sorted(set(WORD.findall(text))), "hash": ""}
+
+    def sync(self):
+        """Pick up notes/links/annotations other processes (the hooks) wrote."""
+        if self._memory_stamp() != getattr(self, "_stamp", None):
+            self._load_memory()
+            self._associate()
+            return True
+        return False
 
     def refresh(self):
         """Re-chunk files that changed on disk; returns the paths that changed."""
@@ -206,14 +245,22 @@ class Graph:
                 for b in self._resolve(l["b"]):
                     self._link(a, b, "learned", l.get("why", "linked by the AI"))
 
-    def _resolve(self, ref):
-        """A chunk id, a path (-> its chunks' module) or a bare name."""
-        if ref in self.chunks:
+    def _resolve(self, ref, concepts=True):
+        """A chunk id, a path (-> its module), a note title, a concept or a symbol name."""
+        if not ref or not isinstance(ref, str):
+            return []
+        if ref in self.chunks and (concepts or self.chunks[ref]["kind"] != "concept"):
             return [ref]
         if ref in self.files:
             ids = self.files[ref][2]
             mods = [i for i in ids if i.endswith("::<module>")]
             return mods or ids[:1]
+        low = ref.strip().lower()
+        kinds = ("note", "concept") if concepts else ("note",)
+        titled = [cid for cid, c in self.chunks.items() if c["kind"] in kinds and
+                  (c["name"].lower() == low or (len(low) > 12 and c["name"].lower().startswith(low)))]
+        if titled:
+            return titled[:1]
         return [cid for cid, c in self.chunks.items() if ref in c["defines"]][:COMMON_NAME_LIMIT]
 
     def _imports(self, by_file):
@@ -338,7 +385,7 @@ class Graph:
                     break
         else:
             for cid, c in self.chunks.items():
-                if c["kind"] in ("note", "module") or not self.stale(cid):
+                if c["kind"] in ("note", "concept", "module") or not self.stale(cid):
                     continue
                 out.append({"target": cid, "overview": "\n".join(c["text"].splitlines()[:max_lines // 2])})
                 if len(out) >= k:
@@ -349,6 +396,7 @@ class Graph:
 
     def annotate(self, items):
         """items: [{target, summary, concepts: [...], links: [{to, why}]}]"""
+        self.sync()
         done, missing = [], []
         for it in items:
             target = it.get("target") or it.get("id")
@@ -362,13 +410,14 @@ class Graph:
             for link in it.get("links", []):
                 to = link.get("to") if isinstance(link, dict) else link
                 why = link.get("why", "linked while annotating") if isinstance(link, dict) else "linked while annotating"
-                if to and self._resolve(to):
+                if to:
                     self.learned.append({"a": target, "b": to, "why": why,
                                          "time": time.strftime("%Y-%m-%d %H:%M")})
             done.append(target)
         if done:
             _write_jsonl(os.path.join(self.dir, "annotations.jsonl"), list(self.annotations.values()))
             _write_jsonl(os.path.join(self.dir, "learned.jsonl"), self.learned)
+            self._load_memory()
             self._associate()
             self.save()
         return done, missing
@@ -382,6 +431,7 @@ class Graph:
 
     # -- memory: the graph grows from what the AI does ------------------------
     def remember(self, title, content, source=None, links=()):
+        self.sync()
         note = {"id": f"note:{len(self.notes) + 1}:{title[:50]}", "path": f"note:{source or 'memory'}",
                 "kind": "note", "name": title, "start": 1, "end": content.count("\n") + 1,
                 "text": f"{title}\n{content}", "defines": [], "uses": sorted(set(WORD.findall(content))),
@@ -400,13 +450,16 @@ class Graph:
         return note["id"]
 
     def associate(self, a, b, why):
-        if not self._resolve(a) or not self._resolve(b):
+        """Link two things. Code, files, notes and symbols are found by id, path,
+        title or name; anything else becomes a concept node."""
+        a, b = (a or "").strip(), (b or "").strip()
+        if not a or not b or a == b:
             return False
+        self.sync()
         self.learned.append({"a": a, "b": b, "why": why, "time": time.strftime("%Y-%m-%d %H:%M")})
         _write_jsonl(os.path.join(self.dir, "learned.jsonl"), self.learned)
-        for x in self._resolve(a):
-            for y in self._resolve(b):
-                self._link(x, y, "learned", why)
+        self._load_memory()
+        self._associate()
         self.save()
         return True
 
@@ -461,7 +514,7 @@ class Graph:
     def save(self):
         os.makedirs(self.dir, exist_ok=True)
         _write_jsonl(os.path.join(self.dir, "chunks.jsonl"),
-                     [c for c in self.chunks.values() if c["kind"] != "note"])
+                     [c for c in self.chunks.values() if c["kind"] not in ("note", "concept")])
         rows = [{"a": a, "b": b, "weight": round(w, 4), "kinds": kinds}
                 for a, nbrs in self.edges.items() for b, (w, kinds) in nbrs.items() if a < b]
         _write_jsonl(os.path.join(self.dir, "associations.jsonl"), rows)
