@@ -1,3 +1,5 @@
+> **Making ARPG skills?** Follow [`arpg/method/PLAYBOOK.md`](arpg/method/PLAYBOOK.md): research → associations → design in fresh sessions, with random inspiration pairs. It beat both a single session and the codegraph pipeline in blind tests.
+
 # codegraph — meaningful chunks + a self-updating association graph, served to the AI over MCP
 
 1. **Chunk** the repository into meaningful pieces: functions, methods,
